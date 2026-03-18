@@ -11,8 +11,14 @@ On macOS, the recommended path is the scene-planning mode:
 ./run_demo.sh --plan-only
 ```
 
+If you prefer a shortcut:
+
+```bash
+make plan
+```
+
 That loads the Matterport scene, finds semantic objects, and saves the
-object-to-sound plan to `outputs/`.
+object-to-sound plan to `outputs/` as both JSON and CSV.
 
 If you want a no-Habitat fallback:
 
@@ -20,7 +26,27 @@ If you want a no-Habitat fallback:
 ./run_demo.sh --dry-run
 ```
 
+Shortcut:
+
+```bash
+make dry-run
+```
+
 This prints the scene assets and the planned 4-5 audio sources.
+
+## Verify
+
+Run the lightweight unit tests with:
+
+```bash
+./habitat-env/bin/python -m unittest discover -s tests
+```
+
+or:
+
+```bash
+make test
+```
 
 ## Dependencies
 

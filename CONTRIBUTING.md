@@ -15,8 +15,12 @@ Thanks for helping improve this demo.
    ```bash
    ./run_demo.sh --dry-run
    ```
-3. If you have a Linux audio-enabled environment, test the live SoundSpaces path there too.
-4. Keep commit messages short and descriptive.
+3. Run the unit tests:
+   ```bash
+   ./habitat-env/bin/python -m unittest discover -s tests
+   ```
+4. If you have a Linux audio-enabled environment, test the live SoundSpaces path there too.
+5. Keep commit messages short and descriptive.
 
 ## Helpful references
 

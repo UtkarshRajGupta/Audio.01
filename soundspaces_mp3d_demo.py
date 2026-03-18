@@ -20,10 +20,12 @@ prints the exact scene and source plan it would use.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import wave
 from copy import deepcopy
+from collections import Counter
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Sequence
@@ -406,6 +408,10 @@ def make_synthetic_sources(clips: dict[str, Path], max_sources: int, prefix: str
     return sources
 
 
+def source_label_counts(sources: Sequence[PlacedSource]) -> Counter[str]:
+    return Counter(source.label for source in sources)
+
+
 def discover_scene_sources(sim, max_sources: int) -> list[PlacedSource]:
     semantic_scene = getattr(sim, "semantic_scene", None)
     candidates: list[tuple[int, str, list[float]]] = []
@@ -654,6 +660,11 @@ def print_scene_plan(scene_paths: dict[str, Path], sources: Sequence[PlacedSourc
     for idx, src in enumerate(sources, 1):
         pos = ", ".join(f"{v:.3f}" for v in src.position)
         print(f"  {idx}. {src.label} on {src.object_name} at [{pos}] -> {src.audio_clip}")
+    counts = source_label_counts(sources)
+    if counts:
+        print("Source summary:")
+        for label, count in counts.most_common():
+            print(f"  {label}: {count}")
 
 
 def save_plan(output_dir: Path, scene_id: str, sources: Sequence[PlacedSource]) -> Path:
@@ -662,6 +673,36 @@ def save_plan(output_dir: Path, scene_id: str, sources: Sequence[PlacedSource]) 
     with plan_path.open("w", encoding="utf-8") as f:
         json.dump([asdict(src) for src in sources], f, indent=2)
     return plan_path
+
+
+def save_plan_csv(output_dir: Path, scene_id: str, sources: Sequence[PlacedSource]) -> Path:
+    ensure_dirs(output_dir)
+    csv_path = output_dir / f"{scene_id}_audio_plan.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["index", "label", "object_name", "x", "y", "z", "audio_clip"],
+        )
+        writer.writeheader()
+        for idx, src in enumerate(sources, 1):
+            writer.writerow(
+                {
+                    "index": idx,
+                    "label": src.label,
+                    "object_name": src.object_name,
+                    "x": f"{src.position[0]:.6f}",
+                    "y": f"{src.position[1]:.6f}",
+                    "z": f"{src.position[2]:.6f}",
+                    "audio_clip": src.audio_clip,
+                }
+            )
+    return csv_path
+
+
+def save_plan_artifacts(output_dir: Path, scene_id: str, sources: Sequence[PlacedSource]) -> tuple[Path, Path]:
+    plan_path = save_plan(output_dir, scene_id, sources)
+    csv_path = save_plan_csv(output_dir, scene_id, sources)
+    return plan_path, csv_path
 
 
 def run_demo(args: argparse.Namespace) -> int:
@@ -673,7 +714,9 @@ def run_demo(args: argparse.Namespace) -> int:
     if args.dry_run:
         sources = make_synthetic_sources(clips, args.max_sources, "dry_run_object")
         print_scene_plan(scene_paths, sources)
-        save_plan(args.output_dir, args.scene_id, sources)
+        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+        print(f"Saved source plan: {plan_path}")
+        print(f"Saved source CSV: {csv_path}")
         return 0
 
     try:
@@ -686,7 +729,9 @@ def run_demo(args: argparse.Namespace) -> int:
         )
         sources = make_synthetic_sources(clips, args.max_sources, "dry_run_object")
         print_scene_plan(scene_paths, sources)
-        save_plan(args.output_dir, args.scene_id, sources)
+        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+        print(f"Saved source plan: {plan_path}")
+        print(f"Saved source CSV: {csv_path}")
         return 1
 
     scene_glb = scene_paths["glb"]
@@ -713,8 +758,9 @@ def run_demo(args: argparse.Namespace) -> int:
             args.max_sources,
         )
         print_scene_plan(scene_paths, sources)
-        plan_path = save_plan(args.output_dir, args.scene_id, sources)
+        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
         print(f"Saved source plan: {plan_path}")
+        print(f"Saved source CSV: {csv_path}")
         return 0
 
     sources = plan_scene_sources(
@@ -724,7 +770,7 @@ def run_demo(args: argparse.Namespace) -> int:
         args.max_sources,
     )
     print_scene_plan(scene_paths, sources)
-    plan_path = save_plan(args.output_dir, args.scene_id, sources)
+    plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
 
     rendered_paths = render_audio_for_sources(
         scene_glb=scene_glb,
@@ -738,6 +784,7 @@ def run_demo(args: argparse.Namespace) -> int:
     )
 
     print(f"Saved source plan: {plan_path}")
+    print(f"Saved source CSV: {csv_path}")
     for path in rendered_paths:
         print(f"Saved binaural render: {path}")
     print(

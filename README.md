@@ -10,6 +10,7 @@ This workspace now contains a single Matterport3D scene asset bundle:
 The main demo entrypoint is `soundspaces_mp3d_demo.py`.
 `run_demo.sh` is a convenience launcher that sets up the Habitat env `PATH`
 before invoking the demo.
+`Makefile` provides one-word shortcuts for the common repo actions.
 
 Other useful docs:
 
@@ -35,6 +36,12 @@ On macOS, this is the best path:
 ./run_demo.sh --plan-only
 ```
 
+or:
+
+```bash
+make plan
+```
+
 That loads the scene, finds semantic room objects, and exports the
 object-to-sound plan without trying to render binaural audio.
 
@@ -44,10 +51,17 @@ If you do not have Habitat installed yet, use:
 ./run_demo.sh --dry-run
 ```
 
+or:
+
+```bash
+make dry-run
+```
+
 That will create:
 
 - `assets/audio/*.wav`
 - `outputs/5LpN3gDmAk7_audio_plan.json`
+- `outputs/5LpN3gDmAk7_audio_plan.csv`
 
 ## Real Habitat Run
 
@@ -60,10 +74,25 @@ After installing Habitat-Sim and SoundSpaces 2.0 on Linux x64, run:
 Expected outputs:
 
 - `outputs/5LpN3gDmAk7_audio_plan.json`
+- `outputs/5LpN3gDmAk7_audio_plan.csv`
 - `outputs/5LpN3gDmAk7_listener_00.wav`
 - `outputs/5LpN3gDmAk7_listener_01.wav`
 - `outputs/5LpN3gDmAk7_listener_02.wav`
 - `outputs/5LpN3gDmAk7_listener_03.wav`
+
+## Tests
+
+The pure Python planning helpers are covered with unit tests:
+
+```bash
+./habitat-env/bin/python -m unittest discover -s tests
+```
+
+or:
+
+```bash
+make test
+```
 
 ## Notes
 
