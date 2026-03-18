@@ -1,0 +1,63 @@
+# Habitat + SoundSpaces MP3D Demo
+
+This workspace now contains a single Matterport3D scene asset bundle:
+
+- `data/mp3d/5LpN3gDmAk7.glb`
+- `data/mp3d/5LpN3gDmAk7.house`
+- `data/mp3d/5LpN3gDmAk7.navmesh`
+- `data/mp3d/5LpN3gDmAk7_semantic.ply`
+
+The main demo entrypoint is `soundspaces_mp3d_demo.py`.
+`run_demo.sh` is a convenience launcher that sets up the Habitat env `PATH`
+before invoking the demo.
+
+## What it does
+
+1. Loads the Matterport3D scene in Habitat-Sim when the simulator is available.
+2. Tries to discover semantic objects in the room.
+3. Places up to 5 audio sources on those objects.
+4. Uses SoundSpaces-style binaural rendering to produce spatial audio.
+5. Saves a source plan JSON and one or more rendered WAV files.
+
+If Habitat-Sim is not installed yet, the script still runs in `--dry-run` mode
+and generates a source plan plus synthetic stand-in audio clips.
+
+## Quick Start
+
+```bash
+./run_demo.sh --dry-run
+```
+
+That will create:
+
+- `assets/audio/*.wav`
+- `outputs/5LpN3gDmAk7_audio_plan.json`
+
+## Real Habitat Run
+
+After installing Habitat-Sim and SoundSpaces 2.0, run:
+
+```bash
+./run_demo.sh
+```
+
+Expected outputs:
+
+- `outputs/5LpN3gDmAk7_audio_plan.json`
+- `outputs/5LpN3gDmAk7_listener_00.wav`
+- `outputs/5LpN3gDmAk7_listener_01.wav`
+- `outputs/5LpN3gDmAk7_listener_02.wav`
+- `outputs/5LpN3gDmAk7_listener_03.wav`
+
+## Notes
+
+- The current audio clips are synthetic stand-ins so the pipeline can be tested
+  without external media assets.
+- Once the simulator is live, the next improvement is to replace those clips
+  with real tap, washer, fridge, fan, and kettle recordings.
+- The source-placement logic is semantic-first with a fallback to navigable
+  points if the scene labels are sparse.
+- True SoundSpaces 2.0 audio rendering requires the upstream RLRAudioPropagation
+  binary, which is Linux x64 only. On this macOS arm64 machine, Habitat-Sim can
+  run and the demo can plan sources, but the live binaural render path is not
+  available without moving the stack to Linux.

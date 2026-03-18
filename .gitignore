@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+.venv/
+habitat-env/
+miniforge3/
+miniforge.sh
+third_party/
+assets/audio/
+data/
+outputs/
