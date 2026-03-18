@@ -24,7 +24,7 @@ Other useful docs:
 3. Places up to 5 audio sources on those objects.
 4. Uses SoundSpaces-style binaural rendering to produce spatial audio.
 5. Saves a source plan JSON and one or more rendered WAV files.
-6. Writes a tiny top-down source-map visualizer so you can inspect the layout.
+6. Writes a tiny top-down source-map visualizer with hover, click-to-pin, and fixture filters so you can inspect the layout.
 
 If Habitat-Sim is not installed yet, the script still runs in `--dry-run` mode
 and generates a source plan plus synthetic stand-in audio clips.

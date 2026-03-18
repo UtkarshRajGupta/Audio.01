@@ -119,6 +119,8 @@ SOUND_LIBRARY = [
     },
 ]
 
+SOUND_LIBRARY_ORDER = {spec["name"]: idx for idx, spec in enumerate(SOUND_LIBRARY)}
+
 
 @dataclass
 class PlacedSource:
@@ -367,19 +369,27 @@ def object_label(obj: object) -> str:
         name_attr = getattr(value, "name", None)
         if callable(name_attr):
             try:
-                return str(name_attr())
+                text = str(name_attr()).strip()
+                if text:
+                    return text
             except TypeError:
                 pass
         if isinstance(name_attr, str):
-            return name_attr
+            text = name_attr.strip()
+            if text:
+                return text
         if isinstance(value, str):
-            return value
+            text = value.strip()
+            if text:
+                return text
         if callable(value):
             try:
                 value = value()
             except TypeError:
                 pass
-        return str(value)
+        text = str(value).strip()
+        if text:
+            return text
     return "unknown"
 
 
@@ -647,6 +657,14 @@ def format_point(position: Sequence[float]) -> str:
     return f"[{position[0]:.2f}, {position[1]:.2f}, {position[2]:.2f}]"
 
 
+def point_key(position: Sequence[float]) -> str:
+    return "_".join(f"{float(component):.2f}" for component in position)
+
+
+def source_label_sort_key(label: str) -> tuple[int, str]:
+    return SOUND_LIBRARY_ORDER.get(label, len(SOUND_LIBRARY)), label
+
+
 def build_scene_plan(
     scene_glb: Path,
     scene_dir: Path,
@@ -715,7 +733,19 @@ def build_source_map_svg(
         ".grid { stroke: #2a3342; stroke-width: 1; opacity: 0.55; }"
         ".axis { stroke: #475569; stroke-width: 1.25; opacity: 0.7; }"
         ".bounds { fill: rgba(20,24,31,0.78); stroke: #93c5fd; stroke-width: 2; stroke-dasharray: 7 6; }"
-        ".objects { fill: #cbd5e1; opacity: 0.18; }"
+        ".map-object, .map-source { cursor: pointer; transition: opacity 120ms ease, filter 120ms ease, transform 120ms ease; }"
+        ".map-object { fill: #cbd5e1; }"
+        ".map-object .object-dot { fill: #cbd5e1; }"
+        ".map-object .object-ring { fill: none; stroke: #cbd5e1; stroke-width: 1.2; opacity: 0.3; }"
+        ".map-object.is-hovered, .map-object.is-selected { opacity: 1; }"
+        ".map-object.is-hovered .object-ring, .map-object.is-selected .object-ring { opacity: 1; stroke: #f8fafc; }"
+        ".map-object.is-dimmed { opacity: 0.08; }"
+        ".map-source.is-dimmed { opacity: 0.18; }"
+        ".map-source.is-hovered .source-core, .map-source.is-selected .source-core { stroke-width: 3.2px; }"
+        ".map-source.is-hovered .source-label, .map-source.is-selected .source-label { fill: #ffffff; }"
+        ".map-source.is-dimmed .source-label { opacity: 0.7; }"
+        ".source-backdrop { fill: #0f172a; opacity: 0.85; }"
+        ".source-core { stroke: #f8fafc; stroke-width: 2; }"
         ".source-label { font: 600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #e5e7eb; paint-order: stroke; stroke: #0f172a; stroke-width: 3px; stroke-linejoin: round; }"
         ".title { font: 700 28px/1.2 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #f8fafc; }"
         ".subtitle { font: 400 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #cbd5e1; }"
@@ -767,23 +797,34 @@ def build_source_map_svg(
         px, py = world_to_topdown(point.position, plan.bounds, layout)
         dot_size = 2.0 if source_priority(point.label) >= 10000 else 2.7
         dot_opacity = 0.08 if source_priority(point.label) >= 10000 else 0.18
+        key = point_key(point.position)
+        point_title = f"{point.label} {format_point(point.position)}"
         parts.append(
-            f'<g class="objects"><title>{html.escape(point.label)} {html.escape(format_point(point.position))}</title>'
-            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{dot_size:.2f}" fill="#cbd5e1" opacity="{dot_opacity:.2f}"/></g>'
+            f'<g class="map-object" data-point-key="{html.escape(key)}" data-object-label="{html.escape(point.label)}" '
+            f'data-position="{html.escape(format_point(point.position))}" tabindex="0" role="button" '
+            f'aria-label="Object centroid {html.escape(point.label)} at {html.escape(format_point(point.position))}">'
+            f'<title>{html.escape(point_title)}</title>'
+            f'<circle class="object-ring" cx="{px:.2f}" cy="{py:.2f}" r="{dot_size + 2.0:.2f}" opacity="{dot_opacity:.2f}"/>'
+            f'<circle class="object-dot" cx="{px:.2f}" cy="{py:.2f}" r="{dot_size:.2f}" opacity="{dot_opacity:.2f}"/></g>'
         )
 
     for idx, source in enumerate(plan.sources):
         px, py = world_to_topdown(source.position, plan.bounds, layout)
         color = stable_label_color(source.label)
         label_text = f"{source.label} -> {source.object_name}"
+        key = point_key(source.position)
         label_dx = 16 if idx % 2 == 0 else -16
         text_anchor = "start" if label_dx > 0 else "end"
         text_x = px + label_dx
         text_y = py - 12 if idx % 2 == 0 else py + 20
         parts.append(
-            f'<g filter="url(#shadow)"><title>{html.escape(label_text)} {html.escape(format_point(source.position))}</title>'
-            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="11" fill="#0f172a" opacity="0.85"/>'
-            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="8.5" fill="{color}" stroke="#f8fafc" stroke-width="2"/>'
+            f'<g class="map-source" filter="url(#shadow)" data-source-key="{html.escape(key)}" '
+            f'data-label="{html.escape(source.label)}" data-object-label="{html.escape(source.object_name)}" '
+            f'data-position="{html.escape(format_point(source.position))}" tabindex="0" role="button" '
+            f'aria-label="Source {html.escape(source.label)} on {html.escape(source.object_name)} at {html.escape(format_point(source.position))}">'
+            f'<title>{html.escape(label_text)} {html.escape(format_point(source.position))}</title>'
+            f'<circle class="source-backdrop" cx="{px:.2f}" cy="{py:.2f}" r="11"/>'
+            f'<circle class="source-core" cx="{px:.2f}" cy="{py:.2f}" r="8.5" fill="{color}"/>'
             f'<text x="{text_x:.2f}" y="{text_y:.2f}" text-anchor="{text_anchor}" class="source-label">{html.escape(source.label)}</text>'
             f"</g>"
         )
@@ -796,7 +837,7 @@ def build_source_map_svg(
 
 
 def build_source_map_html(scene_id: str, plan: ScenePlan, svg: str) -> str:
-    summary_items = []
+    summary_items: list[str] = []
     for source in plan.sources:
         summary_items.append(
             "<li>"
@@ -807,173 +848,466 @@ def build_source_map_html(scene_id: str, plan: ScenePlan, svg: str) -> str:
             "</li>"
         )
 
+    label_counts = source_label_counts(plan.sources)
+    filter_buttons: list[str] = [
+        '<button type="button" class="filter-chip is-active" data-filter="all" aria-pressed="true">All</button>'
+    ]
+    for label in sorted(label_counts, key=source_label_sort_key):
+        count = label_counts[label]
+        filter_buttons.append(
+            f'<button type="button" class="filter-chip" data-filter="{html.escape(label)}" aria-pressed="false">'
+            f'{html.escape(label)} <span class="count">{count}</span>'
+            "</button>"
+        )
+
     note = (
-        "This is a schematic dry-run view." if not plan.object_points else "Gray points are the semantic object centroids from the Matterport scene."
+        "This is a schematic dry-run view."
+        if not plan.object_points
+        else "Gray points are the semantic object centroids from the Matterport scene."
     )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{html.escape(scene_id)} source map</title>
-<style>
-  :root {{
-    color-scheme: dark;
-    --bg: #0b1020;
-    --panel: #111827;
-    --panel-border: #223046;
-    --text: #e5e7eb;
-    --muted: #94a3b8;
-  }}
-  body {{
-    margin: 0;
-    background:
-      radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 30%),
-      radial-gradient(circle at bottom right, rgba(167, 139, 250, 0.12), transparent 26%),
-      var(--bg);
-    color: var(--text);
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  }}
-  .wrap {{
-    max-width: 1240px;
-    margin: 0 auto;
-    padding: 24px;
-  }}
-  .hero {{
-    display: flex;
-    justify-content: space-between;
-    gap: 20px;
-    align-items: end;
-    margin-bottom: 18px;
-  }}
-  h1 {{
-    margin: 0;
-    font-size: 32px;
-    line-height: 1.1;
-  }}
-  .sub {{
-    margin: 8px 0 0;
-    color: var(--muted);
-    max-width: 68ch;
-  }}
-  .card {{
-    background: rgba(17, 24, 39, 0.92);
-    border: 1px solid var(--panel-border);
-    border-radius: 22px;
-    overflow: hidden;
-    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.35);
-  }}
-  .meta {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
-    margin: 18px 0;
-  }}
-  .stat {{
-    border: 1px solid var(--panel-border);
-    background: rgba(17, 24, 39, 0.74);
-    border-radius: 16px;
-    padding: 12px 14px;
-  }}
-  .stat .label {{
-    display: block;
-    color: var(--muted);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 6px;
-  }}
-  .stat .value {{
-    font-size: 18px;
-    font-weight: 700;
-  }}
-  .legend {{
-    margin-top: 18px;
-    display: grid;
-    gap: 12px;
-  }}
-  .legend h2 {{
-    margin: 0 0 6px;
-    font-size: 18px;
-  }}
-  .legend ul {{
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: grid;
-    gap: 8px;
-  }}
-  .legend li {{
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 10px;
-    align-items: center;
-    padding: 10px 12px;
-    background: rgba(17, 24, 39, 0.72);
-    border: 1px solid var(--panel-border);
-    border-radius: 14px;
-  }}
-  .swatch {{
-    width: 14px;
-    height: 14px;
-    border-radius: 999px;
-    display: inline-block;
-    box-shadow: 0 0 0 3px rgba(255,255,255,0.08);
-  }}
-  .muted {{
-    color: var(--muted);
-  }}
-  code {{
-    display: inline-block;
-    margin-left: 8px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.06);
-    color: #dbeafe;
-  }}
-  .note {{
-    color: var(--muted);
-    font-size: 14px;
-    margin-top: 10px;
-  }}
-  @media (max-width: 760px) {{
-    .wrap {{ padding: 16px; }}
-    h1 {{ font-size: 24px; }}
-  }}
-</style>
-</head>
-<body>
-  <main class="wrap">
-    <div class="hero">
-      <div>
-        <h1>{html.escape(scene_id)} source map</h1>
-        <p class="sub">Inspect how the planned sound sources land in the room. Open this file in a browser, then use the CSV/JSON plan alongside it if you want to replay the setup elsewhere.</p>
-      </div>
-    </div>
+    summary_items_html = "".join(summary_items)
+    filter_buttons_html = "".join(filter_buttons)
 
-    <section class="meta" aria-label="Scene summary">
-      <div class="stat"><span class="label">Sources</span><span class="value">{len(plan.sources)}</span></div>
-      <div class="stat"><span class="label">Semantic objects</span><span class="value">{len(plan.object_points)}</span></div>
-      <div class="stat"><span class="label">Bounds</span><span class="value">x {plan.bounds.min_x:.1f}..{plan.bounds.max_x:.1f} m</span></div>
-      <div class="stat"><span class="label">Bounds</span><span class="value">z {plan.bounds.min_z:.1f}..{plan.bounds.max_z:.1f} m</span></div>
-    </section>
+    page_parts = [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8" />',
+        '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+        f"<title>{html.escape(scene_id)} source map</title>",
+        "<style>",
+        ":root {",
+        "  color-scheme: dark;",
+        "  --bg: #0b1020;",
+        "  --panel: #111827;",
+        "  --panel-border: #223046;",
+        "  --text: #e5e7eb;",
+        "  --muted: #94a3b8;",
+        "  --chip: rgba(255, 255, 255, 0.06);",
+        "  --chip-active: rgba(103, 232, 249, 0.22);",
+        "}",
+        "body {",
+        "  margin: 0;",
+        "  background:",
+        "    radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 30%),",
+        "    radial-gradient(circle at bottom right, rgba(167, 139, 250, 0.12), transparent 26%),",
+        "    var(--bg);",
+        "  color: var(--text);",
+        '  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+        "}",
+        ".wrap {",
+        "  max-width: 1240px;",
+        "  margin: 0 auto;",
+        "  padding: 24px;",
+        "}",
+        ".hero {",
+        "  display: flex;",
+        "  justify-content: space-between;",
+        "  gap: 20px;",
+        "  align-items: end;",
+        "  margin-bottom: 18px;",
+        "}",
+        "h1 {",
+        "  margin: 0;",
+        "  font-size: 32px;",
+        "  line-height: 1.1;",
+        "}",
+        ".sub {",
+        "  margin: 8px 0 0;",
+        "  color: var(--muted);",
+        "  max-width: 68ch;",
+        "}",
+        ".card {",
+        "  background: rgba(17, 24, 39, 0.92);",
+        "  border: 1px solid var(--panel-border);",
+        "  border-radius: 22px;",
+        "  overflow: hidden;",
+        "  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.35);",
+        "}",
+        ".map-shell svg {",
+        "  display: block;",
+        "  width: 100%;",
+        "  height: auto;",
+        "}",
+        ".meta {",
+        "  display: grid;",
+        "  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));",
+        "  gap: 12px;",
+        "  margin: 18px 0;",
+        "}",
+        ".stat {",
+        "  border: 1px solid var(--panel-border);",
+        "  background: rgba(17, 24, 39, 0.74);",
+        "  border-radius: 16px;",
+        "  padding: 12px 14px;",
+        "}",
+        ".stat .label {",
+        "  display: block;",
+        "  color: var(--muted);",
+        "  font-size: 12px;",
+        "  text-transform: uppercase;",
+        "  letter-spacing: 0.08em;",
+        "  margin-bottom: 6px;",
+        "}",
+        ".stat .value {",
+        "  font-size: 18px;",
+        "  font-weight: 700;",
+        "}",
+        ".map-stage {",
+        "  position: relative;",
+        "}",
+        ".map-tooltip {",
+        "  position: fixed;",
+        "  z-index: 30;",
+        "  max-width: 280px;",
+        "  padding: 10px 12px;",
+        "  border-radius: 14px;",
+        "  background: rgba(15, 23, 42, 0.96);",
+        "  border: 1px solid rgba(148, 163, 184, 0.24);",
+        "  color: #f8fafc;",
+        "  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);",
+        "  pointer-events: none;",
+        "  white-space: pre-line;",
+        "  opacity: 0;",
+        "  transform: translate3d(0, 6px, 0);",
+        "  transition: opacity 120ms ease, transform 120ms ease;",
+        "}",
+        ".map-tooltip.is-visible {",
+        "  opacity: 1;",
+        "  transform: translate3d(0, 0, 0);",
+        "}",
+        ".selection-status {",
+        "  margin-top: 10px;",
+        "  color: var(--muted);",
+        "  font-size: 14px;",
+        "}",
+        ".legend {",
+        "  margin-top: 18px;",
+        "  display: grid;",
+        "  gap: 12px;",
+        "}",
+        ".legend-head {",
+        "  display: flex;",
+        "  justify-content: space-between;",
+        "  gap: 16px;",
+        "  align-items: end;",
+        "  flex-wrap: wrap;",
+        "}",
+        ".legend h2 {",
+        "  margin: 0;",
+        "  font-size: 18px;",
+        "}",
+        ".legend-hint {",
+        "  margin: 8px 0 0;",
+        "  color: var(--muted);",
+        "  font-size: 14px;",
+        "  max-width: 70ch;",
+        "}",
+        ".legend ul {",
+        "  list-style: none;",
+        "  padding: 0;",
+        "  margin: 0;",
+        "  display: grid;",
+        "  gap: 8px;",
+        "}",
+        ".legend li {",
+        "  display: grid;",
+        "  grid-template-columns: auto 1fr;",
+        "  gap: 10px;",
+        "  align-items: center;",
+        "  padding: 10px 12px;",
+        "  background: rgba(17, 24, 39, 0.72);",
+        "  border: 1px solid var(--panel-border);",
+        "  border-radius: 14px;",
+        "}",
+        ".filter-row {",
+        "  display: flex;",
+        "  flex-wrap: wrap;",
+        "  gap: 8px;",
+        "  justify-content: flex-end;",
+        "}",
+        ".filter-chip {",
+        "  appearance: none;",
+        "  border: 1px solid var(--panel-border);",
+        "  background: var(--chip);",
+        "  color: var(--text);",
+        "  border-radius: 999px;",
+        "  padding: 7px 12px;",
+        "  font: inherit;",
+        "  font-size: 13px;",
+        "  cursor: pointer;",
+        "  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;",
+        "}",
+        ".filter-chip:hover, .filter-chip:focus-visible {",
+        "  background: rgba(255, 255, 255, 0.1);",
+        "  border-color: rgba(147, 197, 253, 0.7);",
+        "  outline: none;",
+        "  transform: translateY(-1px);",
+        "}",
+        ".filter-chip.is-active {",
+        "  background: var(--chip-active);",
+        "  border-color: rgba(103, 232, 249, 0.72);",
+        "}",
+        ".filter-chip .count {",
+        "  color: #bfdbfe;",
+        "}",
+        ".swatch {",
+        "  width: 14px;",
+        "  height: 14px;",
+        "  border-radius: 999px;",
+        "  display: inline-block;",
+        "  box-shadow: 0 0 0 3px rgba(255,255,255,0.08);",
+        "}",
+        ".muted {",
+        "  color: var(--muted);",
+        "}",
+        "code {",
+        "  display: inline-block;",
+        "  margin-left: 8px;",
+        "  padding: 2px 8px;",
+        "  border-radius: 999px;",
+        "  background: rgba(255, 255, 255, 0.06);",
+        "  color: #dbeafe;",
+        "}",
+        ".note {",
+        "  color: var(--muted);",
+        "  font-size: 14px;",
+        "  margin-top: 10px;",
+        "}",
+        "@media (max-width: 760px) {",
+        "  .wrap { padding: 16px; }",
+        "  h1 { font-size: 24px; }",
+        "  .legend-head { align-items: start; }",
+        "}",
+        "</style>",
+        "</head>",
+        "<body>",
+        '  <main class="wrap">',
+        '    <div class="hero">',
+        "      <div>",
+        f"        <h1>{html.escape(scene_id)} source map</h1>",
+        '        <p class="sub">Inspect how the planned sound sources land in the room. Hover a marker for a quick label, click to pin the source/object pair, and use the chips to focus a fixture type.</p>',
+        "      </div>",
+        "    </div>",
+        "",
+        '    <section class="meta" aria-label="Scene summary">',
+        f'      <div class="stat"><span class="label">Sources</span><span class="value">{len(plan.sources)}</span></div>',
+        f'      <div class="stat"><span class="label">Semantic objects</span><span class="value">{len(plan.object_points)}</span></div>',
+        f'      <div class="stat"><span class="label">Bounds</span><span class="value">x {plan.bounds.min_x:.1f}..{plan.bounds.max_x:.1f} m</span></div>',
+        f'      <div class="stat"><span class="label">Bounds</span><span class="value">z {plan.bounds.min_z:.1f}..{plan.bounds.max_z:.1f} m</span></div>',
+        "    </section>",
+        "",
+        '    <section class="map-stage" data-map-stage>',
+        '      <div id="map-tooltip" class="map-tooltip" aria-hidden="true"></div>',
+        '      <div class="card map-shell">',
+        f"        {svg}",
+        "      </div>",
+        '      <div id="selection-status" class="selection-status" role="status" aria-live="polite">Hover a source marker to inspect it. Click to pin a source/object pair.</div>',
+        "    </section>",
+        "",
+        f'    <p class="note">{html.escape(note)}</p>',
+        "",
+        '    <section class="legend">',
+        '      <div class="legend-head">',
+        "        <div>",
+        '          <h2>Planned Sources</h2>',
+        '          <p class="legend-hint">The filter chips focus the marker labels. The legend list below keeps the exact object name and position handy for replay or export.</p>',
+        "        </div>",
+        f'        <div class="filter-row" role="toolbar" aria-label="Fixture filters">{filter_buttons_html}</div>',
+        "      </div>",
+        "      <ul>",
+        f"        {summary_items_html}",
+        "      </ul>",
+        "    </section>",
+        "  </main>",
+        "",
+        "<script>",
+        "(() => {",
+        '  const stage = document.querySelector("[data-map-stage]");',
+        '  const tooltip = document.getElementById("map-tooltip");',
+        '  const status = document.getElementById("selection-status");',
+        '  const filterButtons = Array.from(document.querySelectorAll(".filter-chip"));',
+        '  const sourceNodes = Array.from(document.querySelectorAll(".map-source"));',
+        '  const objectNodes = Array.from(document.querySelectorAll(".map-object"));',
+        "  let activeFilter = \"all\";",
+        "  let hoveredKey = null;",
+        "  let pinnedKey = null;",
+        "  let lastPointerX = 24;",
+        "  let lastPointerY = 24;",
+        "",
+        "  const attr = (node, name) => node.getAttribute(name) || \"\";",
+        "",
+        "  function describeKey(key) {",
+        "    if (!key) {",
+        "      return \"\";",
+        "    }",
+        "    const source = sourceNodes.find((node) => attr(node, \"data-source-key\") === key);",
+        "    if (source) {",
+        "      return `${attr(source, \"data-label\")} on ${attr(source, \"data-object-label\")} at ${attr(source, \"data-position\")}`;",
+        "    }",
+        "    const point = objectNodes.find((node) => attr(node, \"data-point-key\") === key);",
+        "    if (point) {",
+        "      return `${attr(point, \"data-object-label\")} at ${attr(point, \"data-position\")}`;",
+        "    }",
+        "    return \"\";",
+        "  }",
+        "",
+        "  function activeKeysForFilter() {",
+        "    if (activeFilter === \"all\") {",
+        "      return new Set(sourceNodes.map((node) => attr(node, \"data-source-key\")));",
+        "    }",
+        "    return new Set(",
+        "      sourceNodes",
+        "        .filter((node) => attr(node, \"data-label\") === activeFilter)",
+        "        .map((node) => attr(node, \"data-source-key\"))",
+        "    );",
+        "  }",
+        "",
+        "  function setTooltip(text, event) {",
+        "    if (!text) {",
+        "      tooltip.classList.remove(\"is-visible\");",
+        "      return;",
+        "    }",
+        "    if (event && typeof event.clientX === \"number\" && typeof event.clientY === \"number\") {",
+        "      lastPointerX = event.clientX;",
+        "      lastPointerY = event.clientY;",
+        "    }",
+        "    tooltip.textContent = text;",
+        "    tooltip.style.left = `${lastPointerX + 14}px`;",
+        "    tooltip.style.top = `${lastPointerY + 14}px`;",
+        "    tooltip.classList.add(\"is-visible\");",
+        "  }",
+        "",
+        "  function hideTooltip() {",
+        "    tooltip.classList.remove(\"is-visible\");",
+        "  }",
+        "",
+        "  function updateStatus() {",
+        "    const key = pinnedKey || hoveredKey;",
+        "    if (key) {",
+        "      status.textContent = describeKey(key);",
+        "      return;",
+        "    }",
+        "    status.textContent = activeFilter === \"all\"",
+        "      ? \"Hover a source marker to inspect it. Click to pin a source/object pair.\"",
+        "      : `Filtered to ${activeFilter}. Hover or click a marker to inspect it.`;",
+        "  }",
+        "",
+        "  function updateFilterButtons() {",
+        "    filterButtons.forEach((button) => {",
+        "      const isActive = attr(button, \"data-filter\") === activeFilter;",
+        "      button.classList.toggle(\"is-active\", isActive);",
+        "      button.setAttribute(\"aria-pressed\", isActive ? \"true\" : \"false\");",
+        "    });",
+        "  }",
+        "",
+        "  function updateVisualState() {",
+        "    const activeKeys = activeKeysForFilter();",
+        "    sourceNodes.forEach((node) => {",
+        "      const key = attr(node, \"data-source-key\");",
+        "      const labelMatch = activeFilter === \"all\" || attr(node, \"data-label\") === activeFilter;",
+        "      const focusMatch = key === hoveredKey || key === pinnedKey;",
+        "      node.classList.toggle(\"is-hovered\", key === hoveredKey);",
+        "      node.classList.toggle(\"is-selected\", key === pinnedKey);",
+        "      node.classList.toggle(\"is-dimmed\", !labelMatch && !focusMatch);",
+        "    });",
+        "    objectNodes.forEach((node) => {",
+        "      const key = attr(node, \"data-point-key\");",
+        "      const labelMatch = activeFilter === \"all\" || activeKeys.has(key);",
+        "      const focusMatch = key === hoveredKey || key === pinnedKey;",
+        "      node.classList.toggle(\"is-hovered\", key === hoveredKey);",
+        "      node.classList.toggle(\"is-selected\", key === pinnedKey);",
+        "      node.classList.toggle(\"is-dimmed\", !labelMatch && !focusMatch);",
+        "    });",
+        "    updateFilterButtons();",
+        "    updateStatus();",
+        "  }",
+        "",
+        "  function setHovered(key, event) {",
+        "    hoveredKey = key;",
+        "    updateVisualState();",
+        "    setTooltip(describeKey(key), event);",
+        "  }",
+        "",
+        "  function clearHovered() {",
+        "    if (pinnedKey) {",
+        "      hoveredKey = pinnedKey;",
+        "    } else {",
+        "      hoveredKey = null;",
+        "      hideTooltip();",
+        "    }",
+        "    updateVisualState();",
+        "  }",
+        "",
+        "  function togglePinned(key, event) {",
+        "    pinnedKey = pinnedKey === key ? null : key;",
+        "    hoveredKey = pinnedKey || null;",
+        "    updateVisualState();",
+        "    if (pinnedKey) {",
+        "      setTooltip(describeKey(key), event);",
+        "    } else {",
+        "      hideTooltip();",
+        "    }",
+        "  }",
+        "",
+        "  function attachNodeHandlers(node, keyAttr) {",
+        "    node.addEventListener(\"pointerenter\", (event) => setHovered(attr(node, keyAttr), event));",
+        "    node.addEventListener(\"pointermove\", (event) => {",
+        "      if (tooltip.classList.contains(\"is-visible\")) {",
+        "        setTooltip(describeKey(attr(node, keyAttr)), event);",
+        "      }",
+        "    });",
+        "    node.addEventListener(\"pointerleave\", () => {",
+        "      clearHovered();",
+        "    });",
+        "    node.addEventListener(\"click\", (event) => {",
+        "      event.stopPropagation();",
+        "      togglePinned(attr(node, keyAttr), event);",
+        "    });",
+        "    node.addEventListener(\"keydown\", (event) => {",
+        "      if (event.key === \"Enter\" || event.key === \" \") {",
+        "        event.preventDefault();",
+        "        togglePinned(attr(node, keyAttr), event);",
+        "      }",
+        "    });",
+        "    node.addEventListener(\"focus\", (event) => setHovered(attr(node, keyAttr), event));",
+        "    node.addEventListener(\"blur\", () => clearHovered());",
+        "  }",
+        "",
+        "  sourceNodes.forEach((node) => attachNodeHandlers(node, \"data-source-key\"));",
+        "  objectNodes.forEach((node) => attachNodeHandlers(node, \"data-point-key\"));",
+        "",
+        "  filterButtons.forEach((button) => {",
+        "    button.addEventListener(\"click\", () => {",
+        "      activeFilter = attr(button, \"data-filter\") || \"all\";",
+        "      const activeKeys = activeKeysForFilter();",
+        "      if (pinnedKey && activeFilter !== \"all\" && !activeKeys.has(pinnedKey)) {",
+        "        pinnedKey = null;",
+        "        hoveredKey = null;",
+        "        hideTooltip();",
+        "      }",
+        "      updateVisualState();",
+        "    });",
+        "  });",
+        "",
+        "  stage.addEventListener(\"pointerdown\", (event) => {",
+        "    if (event.target.closest(\".map-source, .map-object, [data-filter]\")) {",
+        "      return;",
+        "    }",
+        "    pinnedKey = null;",
+        "    hoveredKey = null;",
+        "    hideTooltip();",
+        "    updateVisualState();",
+        "  });",
+        "",
+        "  updateVisualState();",
+        "})();",
+        "</script>",
+        "</body>",
+        "</html>",
+    ]
 
-    <section class="card">
-      {svg}
-    </section>
-
-    <p class="note">{html.escape(note)}</p>
-
-    <section class="legend">
-      <h2>Planned Sources</h2>
-      <ul>
-        {''.join(summary_items)}
-      </ul>
-    </section>
-  </main>
-</body>
-</html>
-"""
+    return "\n".join(page_parts)
 
 
 def save_source_map_artifacts(output_dir: Path, scene_id: str, plan: ScenePlan) -> tuple[Path, Path]:

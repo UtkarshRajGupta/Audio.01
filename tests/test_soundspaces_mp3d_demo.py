@@ -13,6 +13,7 @@ from soundspaces_mp3d_demo import (
     ScenePlan,
     TopDownBounds,
     build_source_map_svg,
+    build_source_map_html,
     clip_name_for_candidate,
     discover_scene_sources,
     make_synthetic_sources,
@@ -77,6 +78,10 @@ class SoundSpacesDemoTests(unittest.TestCase):
     def test_object_label_handles_string_category(self):
         obj = _FakeObject(category_name="chair")
         self.assertEqual(object_label(obj), "chair")
+
+    def test_object_label_skips_empty_strings(self):
+        obj = _FakeObject(category_name="   ", id="")
+        self.assertEqual(object_label(obj), "unknown")
 
     def test_object_aabb_center_handles_property_and_method(self):
         self.assertEqual(object_aabb_center(_FakeObject(aabb=_FakeAabbProperty([1, 2, 3]))), [1.0, 2.0, 3.0])
@@ -155,6 +160,10 @@ class SoundSpacesDemoTests(unittest.TestCase):
         self.assertIn("tap_water", svg)
         self.assertIn("fan_noise", svg)
         self.assertIn("object centroids", svg)
+        self.assertIn("map-source", svg)
+        self.assertIn("map-object", svg)
+        self.assertIn("data-source-key", svg)
+        self.assertIn("data-point-key", svg)
 
     def test_save_source_map_artifacts_writes_svg_and_html(self):
         plan = ScenePlan(
@@ -176,6 +185,27 @@ class SoundSpacesDemoTests(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertIn("tap_water", svg_path.read_text(encoding="utf-8"))
             self.assertIn("source map", html_path.read_text(encoding="utf-8"))
+            self.assertIn("filter-chip", html_path.read_text(encoding="utf-8"))
+
+    def test_build_source_map_html_includes_interactive_controls(self):
+        plan = ScenePlan(
+            sources=[
+                PlacedSource("tap_water", "sink", [1.0, 1.0, 2.0], "tap.wav"),
+                PlacedSource("fan_noise", "fan", [4.0, 1.0, 5.0], "fan.wav"),
+            ],
+            object_points=[
+                ScenePoint("sink", [1.0, 1.0, 2.0]),
+                ScenePoint("fan", [4.0, 1.0, 5.0]),
+            ],
+            bounds=TopDownBounds(0.0, 6.0, 0.0, 6.0),
+        )
+        html_doc = build_source_map_html("scene", plan, build_source_map_svg("scene", plan))
+        self.assertIn('data-map-stage', html_doc)
+        self.assertIn('map-tooltip', html_doc)
+        self.assertIn('selection-status', html_doc)
+        self.assertIn('data-filter="all"', html_doc)
+        self.assertIn('tap_water', html_doc)
+        self.assertIn('fan_noise', html_doc)
 
     def test_make_synthetic_sources_uses_requested_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -23,7 +23,8 @@ pair you can open in a browser.
 
 The planner prefers real fixtures like sinks, washers, fridges, fans, kettles,
 lamps, chairs, and tables, and skips structural labels such as walls, floors,
-and ceilings.
+and ceilings. The browser view adds hover labels, click-to-pin highlighting,
+and tiny fixture filter chips.
 
 If you want a no-Habitat fallback:
 
