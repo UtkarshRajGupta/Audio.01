@@ -24,6 +24,7 @@ Other useful docs:
 3. Places up to 5 audio sources on those objects.
 4. Uses SoundSpaces-style binaural rendering to produce spatial audio.
 5. Saves a source plan JSON and one or more rendered WAV files.
+6. Writes a tiny top-down source-map visualizer so you can inspect the layout.
 
 If Habitat-Sim is not installed yet, the script still runs in `--dry-run` mode
 and generates a source plan plus synthetic stand-in audio clips.
@@ -45,6 +46,11 @@ make plan
 That loads the scene, finds semantic room objects, and exports the
 object-to-sound plan without trying to render binaural audio.
 
+It also writes a tiny source-map visualizer:
+
+- `outputs/5LpN3gDmAk7_source_map.svg`
+- `outputs/5LpN3gDmAk7_source_map.html`
+
 If you do not have Habitat installed yet, use:
 
 ```bash
@@ -62,6 +68,8 @@ That will create:
 - `assets/audio/*.wav`
 - `outputs/5LpN3gDmAk7_audio_plan.json`
 - `outputs/5LpN3gDmAk7_audio_plan.csv`
+- `outputs/5LpN3gDmAk7_source_map.svg`
+- `outputs/5LpN3gDmAk7_source_map.html`
 
 ## Real Habitat Run
 
@@ -75,6 +83,8 @@ Expected outputs:
 
 - `outputs/5LpN3gDmAk7_audio_plan.json`
 - `outputs/5LpN3gDmAk7_audio_plan.csv`
+- `outputs/5LpN3gDmAk7_source_map.svg`
+- `outputs/5LpN3gDmAk7_source_map.html`
 - `outputs/5LpN3gDmAk7_listener_00.wav`
 - `outputs/5LpN3gDmAk7_listener_01.wav`
 - `outputs/5LpN3gDmAk7_listener_02.wav`

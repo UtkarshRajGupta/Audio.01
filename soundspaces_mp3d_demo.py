@@ -20,7 +20,11 @@ prints the exact scene and source plan it would use.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import csv
+import hashlib
+import html
+import math
 import json
 import os
 import wave
@@ -121,6 +125,37 @@ class PlacedSource:
     object_name: str
     position: list[float]
     audio_clip: str
+
+
+@dataclass
+class ScenePoint:
+    label: str
+    position: list[float]
+
+
+@dataclass(frozen=True)
+class TopDownBounds:
+    min_x: float
+    max_x: float
+    min_z: float
+    max_z: float
+
+
+@dataclass(frozen=True)
+class MapLayout:
+    width: int
+    height: int
+    margin: int
+    scale: float
+    offset_x: float
+    offset_y: float
+
+
+@dataclass
+class ScenePlan:
+    sources: list[PlacedSource]
+    object_points: list[ScenePoint]
+    bounds: TopDownBounds
 
 
 def parse_args() -> argparse.Namespace:
@@ -408,6 +443,499 @@ def make_synthetic_sources(clips: dict[str, Path], max_sources: int, prefix: str
     return sources
 
 
+def collect_scene_object_points(sim) -> list[ScenePoint]:
+    semantic_scene = getattr(sim, "semantic_scene", None)
+    if semantic_scene is None:
+        return []
+
+    points: list[ScenePoint] = []
+    seen: set[tuple[int, int, int]] = set()
+    for obj in iter_semantic_objects(semantic_scene):
+        label = object_label(obj)
+        center = object_aabb_center(obj)
+        if center is None:
+            continue
+        key = tuple(int(round(v * 100)) for v in center)
+        if key in seen:
+            continue
+        seen.add(key)
+        points.append(ScenePoint(label=label, position=center))
+
+    points.sort(key=lambda item: (item.label.lower(), item.position[0], item.position[2]))
+    return points
+
+
+def pathfinder_topdown_bounds(sim) -> TopDownBounds | None:
+    pathfinder = getattr(sim, "pathfinder", None)
+    if pathfinder is None or not hasattr(pathfinder, "get_bounds"):
+        return None
+
+    try:
+        bounds = np.asarray(pathfinder.get_bounds(), dtype=np.float32)
+    except Exception:
+        return None
+
+    if bounds.shape[0] < 2:
+        return None
+
+    lower = bounds[0]
+    upper = bounds[1]
+    return TopDownBounds(
+        min_x=float(min(lower[0], upper[0])),
+        max_x=float(max(lower[0], upper[0])),
+        min_z=float(min(lower[2], upper[2])),
+        max_z=float(max(lower[2], upper[2])),
+    )
+
+
+def _expand_bounds(
+    bounds: TopDownBounds | None,
+    points: Sequence[Sequence[float]],
+    padding_ratio: float = 0.08,
+    min_padding: float = 0.75,
+) -> TopDownBounds:
+    xs: list[float] = []
+    zs: list[float] = []
+
+    if bounds is not None:
+        xs.extend([bounds.min_x, bounds.max_x])
+        zs.extend([bounds.min_z, bounds.max_z])
+
+    for point in points:
+        xs.append(float(point[0]))
+        zs.append(float(point[2]))
+
+    if not xs:
+        return TopDownBounds(-2.0, 2.0, -2.0, 2.0)
+
+    min_x = min(xs)
+    max_x = max(xs)
+    min_z = min(zs)
+    max_z = max(zs)
+
+    span_x = max(max_x - min_x, 0.5)
+    span_z = max(max_z - min_z, 0.5)
+    pad_x = max(span_x * padding_ratio, min_padding)
+    pad_z = max(span_z * padding_ratio, min_padding)
+    return TopDownBounds(min_x - pad_x, max_x + pad_x, min_z - pad_z, max_z + pad_z)
+
+
+def build_scene_bounds(
+    sim,
+    source_positions: Sequence[Sequence[float]],
+    object_points: Sequence[ScenePoint] | Sequence[PlacedSource] | None = None,
+) -> TopDownBounds:
+    points: list[Sequence[float]] = [list(point) for point in source_positions]
+    if object_points is not None:
+        for item in object_points:
+            points.append(item.position if hasattr(item, "position") else item)
+    return _expand_bounds(pathfinder_topdown_bounds(sim), points)
+
+
+def build_map_layout(bounds: TopDownBounds, width: int = 960, height: int = 720, margin: int = 64) -> MapLayout:
+    scene_width = max(bounds.max_x - bounds.min_x, 0.5)
+    scene_height = max(bounds.max_z - bounds.min_z, 0.5)
+    inner_width = max(width - 2 * margin, 1)
+    inner_height = max(height - 2 * margin, 1)
+    scale = min(inner_width / scene_width, inner_height / scene_height)
+    content_width = scene_width * scale
+    content_height = scene_height * scale
+    offset_x = margin + (inner_width - content_width) / 2.0
+    offset_y = margin + (inner_height - content_height) / 2.0
+    return MapLayout(
+        width=width,
+        height=height,
+        margin=margin,
+        scale=scale,
+        offset_x=offset_x,
+        offset_y=offset_y,
+    )
+
+
+def world_to_topdown(
+    position: Sequence[float],
+    bounds: TopDownBounds,
+    layout: MapLayout,
+) -> tuple[float, float]:
+    x = float(position[0])
+    z = float(position[2])
+    px = layout.offset_x + (x - bounds.min_x) * layout.scale
+    py = layout.offset_y + (bounds.max_z - z) * layout.scale
+    return px, py
+
+
+def stable_label_color(label: str) -> str:
+    palette = [
+        "#67E8F9",
+        "#F59E0B",
+        "#A78BFA",
+        "#34D399",
+        "#F472B6",
+        "#F87171",
+        "#38BDF8",
+        "#FBBF24",
+    ]
+    digest = hashlib.sha1(label.encode("utf-8")).digest()
+    return palette[digest[0] % len(palette)]
+
+
+def nice_grid_step(bounds: TopDownBounds) -> float:
+    span = max(bounds.max_x - bounds.min_x, bounds.max_z - bounds.min_z)
+    if span <= 8:
+        return 0.5
+    if span <= 16:
+        return 1.0
+    if span <= 32:
+        return 2.0
+    if span <= 64:
+        return 5.0
+    return 10.0
+
+
+def format_point(position: Sequence[float]) -> str:
+    return f"[{position[0]:.2f}, {position[1]:.2f}, {position[2]:.2f}]"
+
+
+def build_scene_plan(
+    scene_glb: Path,
+    scene_dir: Path,
+    scene_dataset_config: str,
+    max_sources: int,
+) -> ScenePlan:
+    sim = build_scene_sim(scene_glb, scene_dir, scene_dataset_config, create_renderer=False)
+    try:
+        sources = discover_scene_sources(sim, max_sources)
+        if len(sources) < min(4, max_sources):
+            fallback = fallback_sources(sim, max_sources)
+            if len(sources) < max_sources:
+                sources.extend(fallback[: max_sources - len(sources)])
+        object_points = collect_scene_object_points(sim)
+        bounds = build_scene_bounds(
+            sim,
+            [source.position for source in sources],
+            object_points,
+        )
+        return ScenePlan(sources=sources, object_points=object_points, bounds=bounds)
+    finally:
+        try:
+            sim.close()
+        except Exception:
+            pass
+
+
+def make_schematic_plan(sources: Sequence[PlacedSource]) -> ScenePlan:
+    source_list = list(sources)
+    bounds = build_scene_bounds(None, [source.position for source in source_list], None)
+    return ScenePlan(sources=source_list, object_points=[], bounds=bounds)
+
+
+def build_source_map_svg(
+    scene_id: str,
+    plan: ScenePlan,
+    width: int = 960,
+    height: int = 720,
+) -> str:
+    layout = build_map_layout(plan.bounds, width=width, height=height)
+    grid_step = nice_grid_step(plan.bounds)
+
+    x_start = math.floor(plan.bounds.min_x / grid_step) * grid_step
+    x_stop = math.ceil(plan.bounds.max_x / grid_step) * grid_step
+    z_start = math.floor(plan.bounds.min_z / grid_step) * grid_step
+    z_stop = math.ceil(plan.bounds.max_z / grid_step) * grid_step
+
+    scene_width = max(plan.bounds.max_x - plan.bounds.min_x, 0.5)
+    scene_height = max(plan.bounds.max_z - plan.bounds.min_z, 0.5)
+    content_width = scene_width * layout.scale
+    content_height = scene_height * layout.scale
+    map_x = layout.offset_x
+    map_y = layout.offset_y
+
+    parts: list[str] = []
+    parts.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {layout.width} {layout.height}" '
+        f'width="{layout.width}" height="{layout.height}" role="img" aria-label="Top-down source map for {html.escape(scene_id)}">'
+    )
+    parts.append(
+        "<defs>"
+        '<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">'
+        '<feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.35"/>'
+        "</filter>"
+        '<style><![CDATA['
+        ".grid { stroke: #2a3342; stroke-width: 1; opacity: 0.55; }"
+        ".axis { stroke: #475569; stroke-width: 1.25; opacity: 0.7; }"
+        ".bounds { fill: rgba(20,24,31,0.78); stroke: #93c5fd; stroke-width: 2; stroke-dasharray: 7 6; }"
+        ".objects { fill: #cbd5e1; opacity: 0.18; }"
+        ".source-label { font: 600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #e5e7eb; paint-order: stroke; stroke: #0f172a; stroke-width: 3px; stroke-linejoin: round; }"
+        ".title { font: 700 28px/1.2 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #f8fafc; }"
+        ".subtitle { font: 400 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #cbd5e1; }"
+        ".tiny { font: 400 11px/1.4 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #94a3b8; }"
+        "]]></style>"
+        "</defs>"
+    )
+    parts.append('<rect x="0" y="0" width="100%" height="100%" fill="#0b1020"/>')
+    parts.append('<rect x="24" y="24" width="{0}" height="{1}" rx="20" fill="#111827" stroke="#243043"/>'.format(layout.width - 48, layout.height - 48))
+    parts.append(f'<text x="48" y="62" class="title">{html.escape(scene_id)} source map</text>')
+    parts.append(
+        f'<text x="48" y="86" class="subtitle">Gray dots are semantic object centroids. Colored markers are planned sound sources.</text>'
+    )
+    parts.append(
+        f'<text x="48" y="108" class="tiny">Bounds: x {plan.bounds.min_x:.2f}..{plan.bounds.max_x:.2f} m, z {plan.bounds.min_z:.2f}..{plan.bounds.max_z:.2f} m | '
+        f'{len(plan.object_points)} object centroids | {len(plan.sources)} sources</text>'
+    )
+
+    # Grid and axes.
+    for x in np.arange(x_start, x_stop + grid_step * 0.5, grid_step):
+        px, _ = world_to_topdown((x, 0.0, plan.bounds.min_z), plan.bounds, layout)
+        parts.append(
+            f'<line x1="{px:.2f}" y1="{map_y:.2f}" x2="{px:.2f}" y2="{map_y + content_height:.2f}" class="grid"/>'
+        )
+        if abs(x - round(x)) < 1e-6 or grid_step >= 1:
+            parts.append(
+                f'<text x="{px + 2:.2f}" y="{map_y + content_height + 18:.2f}" class="tiny">{x:.0f}</text>'
+            )
+
+    for z in np.arange(z_start, z_stop + grid_step * 0.5, grid_step):
+        _, py = world_to_topdown((plan.bounds.min_x, 0.0, z), plan.bounds, layout)
+        parts.append(
+            f'<line x1="{map_x:.2f}" y1="{py:.2f}" x2="{map_x + content_width:.2f}" y2="{py:.2f}" class="grid"/>'
+        )
+        if abs(z - round(z)) < 1e-6 or grid_step >= 1:
+            parts.append(
+                f'<text x="{map_x - 28:.2f}" y="{py + 4:.2f}" class="tiny">{z:.0f}</text>'
+            )
+
+    parts.append(
+        f'<rect x="{map_x:.2f}" y="{map_y:.2f}" width="{content_width:.2f}" height="{content_height:.2f}" rx="14" class="bounds"/>'
+    )
+    parts.append(
+        f'<text x="{map_x + content_width - 30:.2f}" y="{map_y + content_height + 34:.2f}" class="tiny">x</text>'
+    )
+    parts.append(f'<text x="{map_x - 18:.2f}" y="{map_y + 14:.2f}" class="tiny">z</text>')
+
+    for point in plan.object_points:
+        px, py = world_to_topdown(point.position, plan.bounds, layout)
+        dot_size = 2.0 if source_priority(point.label) >= 10000 else 2.7
+        dot_opacity = 0.08 if source_priority(point.label) >= 10000 else 0.18
+        parts.append(
+            f'<g class="objects"><title>{html.escape(point.label)} {html.escape(format_point(point.position))}</title>'
+            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{dot_size:.2f}" fill="#cbd5e1" opacity="{dot_opacity:.2f}"/></g>'
+        )
+
+    for idx, source in enumerate(plan.sources):
+        px, py = world_to_topdown(source.position, plan.bounds, layout)
+        color = stable_label_color(source.label)
+        label_text = f"{source.label} -> {source.object_name}"
+        label_dx = 16 if idx % 2 == 0 else -16
+        text_anchor = "start" if label_dx > 0 else "end"
+        text_x = px + label_dx
+        text_y = py - 12 if idx % 2 == 0 else py + 20
+        parts.append(
+            f'<g filter="url(#shadow)"><title>{html.escape(label_text)} {html.escape(format_point(source.position))}</title>'
+            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="11" fill="#0f172a" opacity="0.85"/>'
+            f'<circle cx="{px:.2f}" cy="{py:.2f}" r="8.5" fill="{color}" stroke="#f8fafc" stroke-width="2"/>'
+            f'<text x="{text_x:.2f}" y="{text_y:.2f}" text-anchor="{text_anchor}" class="source-label">{html.escape(source.label)}</text>'
+            f"</g>"
+        )
+
+    parts.append(
+        f'<text x="{layout.width - 46}" y="{layout.height - 34}" text-anchor="end" class="tiny">Top-down view | x/z plane</text>'
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def build_source_map_html(scene_id: str, plan: ScenePlan, svg: str) -> str:
+    summary_items = []
+    for source in plan.sources:
+        summary_items.append(
+            "<li>"
+            f'<span class="swatch" style="background:{stable_label_color(source.label)}"></span>'
+            f"<strong>{html.escape(source.label)}</strong>"
+            f" <span class=\"muted\">on {html.escape(source.object_name)}</span>"
+            f"<code>{html.escape(format_point(source.position))}</code>"
+            "</li>"
+        )
+
+    note = (
+        "This is a schematic dry-run view." if not plan.object_points else "Gray points are the semantic object centroids from the Matterport scene."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{html.escape(scene_id)} source map</title>
+<style>
+  :root {{
+    color-scheme: dark;
+    --bg: #0b1020;
+    --panel: #111827;
+    --panel-border: #223046;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+  }}
+  body {{
+    margin: 0;
+    background:
+      radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 30%),
+      radial-gradient(circle at bottom right, rgba(167, 139, 250, 0.12), transparent 26%),
+      var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  .wrap {{
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 24px;
+  }}
+  .hero {{
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    align-items: end;
+    margin-bottom: 18px;
+  }}
+  h1 {{
+    margin: 0;
+    font-size: 32px;
+    line-height: 1.1;
+  }}
+  .sub {{
+    margin: 8px 0 0;
+    color: var(--muted);
+    max-width: 68ch;
+  }}
+  .card {{
+    background: rgba(17, 24, 39, 0.92);
+    border: 1px solid var(--panel-border);
+    border-radius: 22px;
+    overflow: hidden;
+    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.35);
+  }}
+  .meta {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin: 18px 0;
+  }}
+  .stat {{
+    border: 1px solid var(--panel-border);
+    background: rgba(17, 24, 39, 0.74);
+    border-radius: 16px;
+    padding: 12px 14px;
+  }}
+  .stat .label {{
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }}
+  .stat .value {{
+    font-size: 18px;
+    font-weight: 700;
+  }}
+  .legend {{
+    margin-top: 18px;
+    display: grid;
+    gap: 12px;
+  }}
+  .legend h2 {{
+    margin: 0 0 6px;
+    font-size: 18px;
+  }}
+  .legend ul {{
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 8px;
+  }}
+  .legend li {{
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    background: rgba(17, 24, 39, 0.72);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+  }}
+  .swatch {{
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    display: inline-block;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.08);
+  }}
+  .muted {{
+    color: var(--muted);
+  }}
+  code {{
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #dbeafe;
+  }}
+  .note {{
+    color: var(--muted);
+    font-size: 14px;
+    margin-top: 10px;
+  }}
+  @media (max-width: 760px) {{
+    .wrap {{ padding: 16px; }}
+    h1 {{ font-size: 24px; }}
+  }}
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="hero">
+      <div>
+        <h1>{html.escape(scene_id)} source map</h1>
+        <p class="sub">Inspect how the planned sound sources land in the room. Open this file in a browser, then use the CSV/JSON plan alongside it if you want to replay the setup elsewhere.</p>
+      </div>
+    </div>
+
+    <section class="meta" aria-label="Scene summary">
+      <div class="stat"><span class="label">Sources</span><span class="value">{len(plan.sources)}</span></div>
+      <div class="stat"><span class="label">Semantic objects</span><span class="value">{len(plan.object_points)}</span></div>
+      <div class="stat"><span class="label">Bounds</span><span class="value">x {plan.bounds.min_x:.1f}..{plan.bounds.max_x:.1f} m</span></div>
+      <div class="stat"><span class="label">Bounds</span><span class="value">z {plan.bounds.min_z:.1f}..{plan.bounds.max_z:.1f} m</span></div>
+    </section>
+
+    <section class="card">
+      {svg}
+    </section>
+
+    <p class="note">{html.escape(note)}</p>
+
+    <section class="legend">
+      <h2>Planned Sources</h2>
+      <ul>
+        {''.join(summary_items)}
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def save_source_map_artifacts(output_dir: Path, scene_id: str, plan: ScenePlan) -> tuple[Path, Path]:
+    ensure_dirs(output_dir)
+    svg_path = output_dir / f"{scene_id}_source_map.svg"
+    html_path = output_dir / f"{scene_id}_source_map.html"
+    svg = build_source_map_svg(scene_id, plan)
+    html_doc = build_source_map_html(scene_id, plan, svg)
+    svg_path.write_text(svg, encoding="utf-8")
+    html_path.write_text(html_doc, encoding="utf-8")
+    return svg_path, html_path
+
+
 def source_label_counts(sources: Sequence[PlacedSource]) -> Counter[str]:
     return Counter(source.label for source in sources)
 
@@ -585,19 +1113,7 @@ def plan_scene_sources(
     scene_dataset_config: str,
     max_sources: int,
 ) -> list[PlacedSource]:
-    sim = build_scene_sim(scene_glb, scene_dir, scene_dataset_config, create_renderer=False)
-    try:
-        sources = discover_scene_sources(sim, max_sources)
-        if len(sources) < min(4, max_sources):
-            fallback = fallback_sources(sim, max_sources)
-            if len(sources) < max_sources:
-                sources.extend(fallback[: max_sources - len(sources)])
-        return sources
-    finally:
-        try:
-            sim.close()
-        except Exception:
-            pass
+    return build_scene_plan(scene_glb, scene_dir, scene_dataset_config, max_sources).sources
 
 
 def render_audio_for_sources(
@@ -652,7 +1168,11 @@ def render_audio_for_sources(
             pass
 
 
-def print_scene_plan(scene_paths: dict[str, Path], sources: Sequence[PlacedSource]) -> None:
+def print_scene_plan(
+    scene_paths: dict[str, Path],
+    sources: Sequence[PlacedSource],
+    object_points: Sequence[ScenePoint] | None = None,
+) -> None:
     print("Scene assets:")
     for key, path in scene_paths.items():
         print(f"  {key}: {path} {'(missing)' if not path.exists() else ''}")
@@ -660,6 +1180,8 @@ def print_scene_plan(scene_paths: dict[str, Path], sources: Sequence[PlacedSourc
     for idx, src in enumerate(sources, 1):
         pos = ", ".join(f"{v:.3f}" for v in src.position)
         print(f"  {idx}. {src.label} on {src.object_name} at [{pos}] -> {src.audio_clip}")
+    if object_points is not None:
+        print(f"Semantic object centroids: {len(object_points)}")
     counts = source_label_counts(sources)
     if counts:
         print("Source summary:")
@@ -705,6 +1227,16 @@ def save_plan_artifacts(output_dir: Path, scene_id: str, sources: Sequence[Place
     return plan_path, csv_path
 
 
+def save_scene_artifacts(
+    output_dir: Path,
+    scene_id: str,
+    plan: ScenePlan,
+) -> tuple[Path, Path, Path, Path]:
+    plan_path, csv_path = save_plan_artifacts(output_dir, scene_id, plan.sources)
+    svg_path, html_path = save_source_map_artifacts(output_dir, scene_id, plan)
+    return plan_path, csv_path, svg_path, html_path
+
+
 def run_demo(args: argparse.Namespace) -> int:
     scene_paths = scene_assets(args.scene_dir, args.scene_id)
     ensure_dirs(args.output_dir, args.audio_dir)
@@ -713,10 +1245,17 @@ def run_demo(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         sources = make_synthetic_sources(clips, args.max_sources, "dry_run_object")
-        print_scene_plan(scene_paths, sources)
-        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+        plan = make_schematic_plan(sources)
+        print_scene_plan(scene_paths, plan.sources, plan.object_points)
+        plan_path, csv_path, svg_path, html_path = save_scene_artifacts(
+            args.output_dir,
+            args.scene_id,
+            plan,
+        )
         print(f"Saved source plan: {plan_path}")
         print(f"Saved source CSV: {csv_path}")
+        print(f"Saved source map: {svg_path}")
+        print(f"Saved source map HTML: {html_path}")
         return 0
 
     try:
@@ -728,10 +1267,17 @@ def run_demo(args: argparse.Namespace) -> int:
             "Install Habitat-Sim + SoundSpaces 2.0, then rerun without --dry-run."
         )
         sources = make_synthetic_sources(clips, args.max_sources, "dry_run_object")
-        print_scene_plan(scene_paths, sources)
-        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+        plan = make_schematic_plan(sources)
+        print_scene_plan(scene_paths, plan.sources, plan.object_points)
+        plan_path, csv_path, svg_path, html_path = save_scene_artifacts(
+            args.output_dir,
+            args.scene_id,
+            plan,
+        )
         print(f"Saved source plan: {plan_path}")
         print(f"Saved source CSV: {csv_path}")
+        print(f"Saved source map: {svg_path}")
+        print(f"Saved source map HTML: {html_path}")
         return 1
 
     scene_glb = scene_paths["glb"]
@@ -751,26 +1297,36 @@ def run_demo(args: argparse.Namespace) -> int:
                 "Habitat-Sim is installed, but audio is disabled on this machine.\n"
                 "This Mac can still load the scene and export the object-linked source plan."
             )
-        sources = plan_scene_sources(
+        plan = build_scene_plan(
             scene_glb,
             args.scene_dir,
             args.scene_dataset_config,
             args.max_sources,
         )
-        print_scene_plan(scene_paths, sources)
-        plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+        print_scene_plan(scene_paths, plan.sources, plan.object_points)
+        plan_path, csv_path, svg_path, html_path = save_scene_artifacts(
+            args.output_dir,
+            args.scene_id,
+            plan,
+        )
         print(f"Saved source plan: {plan_path}")
         print(f"Saved source CSV: {csv_path}")
+        print(f"Saved source map: {svg_path}")
+        print(f"Saved source map HTML: {html_path}")
         return 0
 
-    sources = plan_scene_sources(
+    plan = build_scene_plan(
         scene_glb,
         args.scene_dir,
         args.scene_dataset_config,
         args.max_sources,
     )
-    print_scene_plan(scene_paths, sources)
-    plan_path, csv_path = save_plan_artifacts(args.output_dir, args.scene_id, sources)
+    print_scene_plan(scene_paths, plan.sources, plan.object_points)
+    plan_path, csv_path, svg_path, html_path = save_scene_artifacts(
+        args.output_dir,
+        args.scene_id,
+        plan,
+    )
 
     rendered_paths = render_audio_for_sources(
         scene_glb=scene_glb,
@@ -779,12 +1335,14 @@ def run_demo(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         materials_json=materials_json,
         scene_id=args.scene_id,
-        sources=sources,
+        sources=plan.sources,
         render_steps=args.render_steps,
     )
 
     print(f"Saved source plan: {plan_path}")
     print(f"Saved source CSV: {csv_path}")
+    print(f"Saved source map: {svg_path}")
+    print(f"Saved source map HTML: {html_path}")
     for path in rendered_paths:
         print(f"Saved binaural render: {path}")
     print(

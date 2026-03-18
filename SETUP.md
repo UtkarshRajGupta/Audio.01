@@ -18,7 +18,8 @@ make plan
 ```
 
 That loads the Matterport scene, finds semantic objects, and saves the
-object-to-sound plan to `outputs/` as both JSON and CSV.
+object-to-sound plan to `outputs/` as JSON and CSV, plus a source map SVG/HTML
+pair you can open in a browser.
 
 If you want a no-Habitat fallback:
 

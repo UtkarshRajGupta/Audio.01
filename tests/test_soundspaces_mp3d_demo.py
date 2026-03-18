@@ -9,11 +9,16 @@ from pathlib import Path
 
 from soundspaces_mp3d_demo import (
     PlacedSource,
+    ScenePoint,
+    ScenePlan,
+    TopDownBounds,
+    build_source_map_svg,
     clip_name_for_candidate,
     make_synthetic_sources,
     object_aabb_center,
     object_label,
     save_plan_artifacts,
+    save_source_map_artifacts,
     scene_assets,
     source_label_counts,
     source_priority,
@@ -102,6 +107,45 @@ class SoundSpacesDemoTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[1]["object_name"], "fan")
             self.assertEqual(rows[0]["x"], "1.100000")
+
+    def test_build_source_map_svg_includes_sources_and_objects(self):
+        plan = ScenePlan(
+            sources=[
+                PlacedSource("tap_water", "sink", [1.0, 1.0, 2.0], "tap.wav"),
+                PlacedSource("fan_noise", "fan", [4.0, 1.0, 5.0], "fan.wav"),
+            ],
+            object_points=[
+                ScenePoint("sink", [1.0, 1.0, 2.0]),
+                ScenePoint("counter", [4.0, 1.0, 5.0]),
+            ],
+            bounds=TopDownBounds(0.0, 6.0, 0.0, 6.0),
+        )
+        svg = build_source_map_svg("scene", plan)
+        self.assertIn("scene source map", svg)
+        self.assertIn("tap_water", svg)
+        self.assertIn("fan_noise", svg)
+        self.assertIn("object centroids", svg)
+
+    def test_save_source_map_artifacts_writes_svg_and_html(self):
+        plan = ScenePlan(
+            sources=[
+                PlacedSource("tap_water", "sink", [1.0, 1.0, 2.0], "tap.wav"),
+                PlacedSource("fan_noise", "fan", [4.0, 1.0, 5.0], "fan.wav"),
+            ],
+            object_points=[
+                ScenePoint("sink", [1.0, 1.0, 2.0]),
+                ScenePoint("counter", [4.0, 1.0, 5.0]),
+            ],
+            bounds=TopDownBounds(0.0, 6.0, 0.0, 6.0),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            svg_path, html_path = save_source_map_artifacts(output_dir, "scene", plan)
+
+            self.assertTrue(svg_path.exists())
+            self.assertTrue(html_path.exists())
+            self.assertIn("tap_water", svg_path.read_text(encoding="utf-8"))
+            self.assertIn("source map", html_path.read_text(encoding="utf-8"))
 
     def test_make_synthetic_sources_uses_requested_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
