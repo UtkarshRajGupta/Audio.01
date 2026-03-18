@@ -14,6 +14,7 @@ from soundspaces_mp3d_demo import (
     TopDownBounds,
     build_source_map_svg,
     clip_name_for_candidate,
+    discover_scene_sources,
     make_synthetic_sources,
     object_aabb_center,
     object_label,
@@ -49,6 +50,11 @@ class _FakeObject:
             setattr(self, key, value)
 
 
+class _FakeSemanticScene:
+    def __init__(self, objects):
+        self.objects = objects
+
+
 class SoundSpacesDemoTests(unittest.TestCase):
     def test_scene_assets(self):
         assets = scene_assets(Path("data/mp3d"), "scene123")
@@ -75,6 +81,30 @@ class SoundSpacesDemoTests(unittest.TestCase):
     def test_object_aabb_center_handles_property_and_method(self):
         self.assertEqual(object_aabb_center(_FakeObject(aabb=_FakeAabbProperty([1, 2, 3]))), [1.0, 2.0, 3.0])
         self.assertEqual(object_aabb_center(_FakeObject(aabb=_FakeAabbMethod())), [1.0, 2.0, 3.0])
+
+    def test_discover_scene_sources_prefers_real_fixtures(self):
+        sim = _FakeObject(
+            semantic_scene=_FakeSemanticScene(
+                [
+                    _FakeObject(category_name="wall", aabb=_FakeAabbProperty([0, 0, 0])),
+                    _FakeObject(category_name="sink", aabb=_FakeAabbProperty([1, 0, 1])),
+                    _FakeObject(category_name="washing machine", aabb=_FakeAabbProperty([2, 0, 1])),
+                    _FakeObject(category_name="freezer", aabb=_FakeAabbProperty([3, 0, 1])),
+                    _FakeObject(category_name="aircon", aabb=_FakeAabbProperty([4, 0, 1])),
+                    _FakeObject(category_name="cooktop", aabb=_FakeAabbProperty([5, 0, 1])),
+                ]
+            )
+        )
+
+        sources = discover_scene_sources(sim, 5)
+        self.assertEqual(
+            [source.label for source in sources],
+            ["tap_water", "washing_machine", "fridge_hum", "fan_noise", "kettle_hiss"],
+        )
+        self.assertEqual(
+            [source.object_name for source in sources],
+            ["sink", "washing machine", "freezer", "aircon", "cooktop"],
+        )
 
     def test_source_label_counts(self):
         sources = [

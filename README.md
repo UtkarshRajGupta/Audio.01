@@ -110,8 +110,10 @@ make test
   without external media assets.
 - Once the simulator is live, the next improvement is to replace those clips
   with real tap, washer, fridge, fan, and kettle recordings.
-- The source-placement logic is semantic-first with a fallback to navigable
-  points if the scene labels are sparse.
+- The source-placement logic is fixture-first: it prefers sink, washer, fridge,
+  fan, kettle, lamp, chair, and table-like labels while skipping structural
+  surfaces such as walls, floors, and ceilings. It still falls back to
+  navigable points if the scene labels are sparse.
 - `run_demo.sh` also skips the editable Habitat-Sim rebuild step so the local
   Mac workflow stays stable.
 - True SoundSpaces 2.0 audio rendering requires the upstream RLRAudioPropagation

@@ -21,6 +21,10 @@ That loads the Matterport scene, finds semantic objects, and saves the
 object-to-sound plan to `outputs/` as JSON and CSV, plus a source map SVG/HTML
 pair you can open in a browser.
 
+The planner prefers real fixtures like sinks, washers, fridges, fans, kettles,
+lamps, chairs, and tables, and skips structural labels such as walls, floors,
+and ceilings.
+
 If you want a no-Habitat fallback:
 
 ```bash

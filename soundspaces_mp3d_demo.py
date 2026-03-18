@@ -27,6 +27,7 @@ import html
 import math
 import json
 import os
+import re
 import wave
 from copy import deepcopy
 from collections import Counter
@@ -70,49 +71,49 @@ configure_habitat_editable_skip()
 SOUND_LIBRARY = [
     {
         "name": "tap_water",
-        "keywords": ["tap", "faucet", "sink", "washbasin"],
+        "keywords": ["faucet", "tap", "sink", "washbasin", "basin"],
         "kind": "water_noise",
         "duration_s": 2.5,
     },
     {
         "name": "washing_machine",
-        "keywords": ["washing machine", "laundry", "washer"],
+        "keywords": ["washing machine", "washer", "laundry", "dryer"],
         "kind": "low_rumble",
         "duration_s": 3.0,
     },
     {
         "name": "fridge_hum",
-        "keywords": ["fridge", "refrigerator"],
+        "keywords": ["fridge", "refrigerator", "freezer"],
         "kind": "hum",
         "duration_s": 3.0,
     },
     {
         "name": "fan_noise",
-        "keywords": ["fan", "vent", "air conditioner"],
+        "keywords": ["fan", "vent", "air conditioner", "aircon", "ac", "ventilation"],
         "kind": "broadband_fan",
         "duration_s": 2.5,
     },
     {
         "name": "kettle_hiss",
-        "keywords": ["kettle", "stove", "oven", "microwave"],
+        "keywords": ["kettle", "microwave", "stove", "oven", "cooktop", "range"],
         "kind": "hiss",
         "duration_s": 2.0,
     },
     {
         "name": "lamp_buzz",
-        "keywords": ["lamp", "light", "bulb"],
+        "keywords": ["lamp", "light", "bulb", "fixture", "lighting"],
         "kind": "buzz",
         "duration_s": 2.0,
     },
     {
         "name": "chair_creak",
-        "keywords": ["chair", "stool"],
+        "keywords": ["chair", "armchair", "stool", "sofa", "couch", "bench"],
         "kind": "creak",
         "duration_s": 1.5,
     },
     {
         "name": "table_clatter",
-        "keywords": ["table", "counter", "desk"],
+        "keywords": ["table", "countertop", "counter", "desk", "island", "tabletop"],
         "kind": "clatter",
         "duration_s": 1.5,
     },
@@ -289,13 +290,63 @@ STRUCTURAL_OBJECT_KEYWORDS = [
 ]
 
 
+def normalize_label(label: str) -> str:
+    return " ".join(part for part in re.split(r"[^a-z0-9]+", label.lower()) if part)
+
+
+def label_matches_keyword(label: str, keyword: str) -> tuple[int, int] | None:
+    normalized_label = normalize_label(label)
+    normalized_keyword = normalize_label(keyword)
+    if not normalized_label or not normalized_keyword:
+        return None
+
+    label_tokens = normalized_label.split()
+    keyword_tokens = normalized_keyword.split()
+    if keyword_tokens and len(keyword_tokens) <= len(label_tokens):
+        window = len(keyword_tokens)
+        for start in range(len(label_tokens) - window + 1):
+            if label_tokens[start : start + window] == keyword_tokens:
+                return 0, start
+
+    position = normalized_label.find(normalized_keyword)
+    if position >= 0:
+        return 1, position
+    return None
+
+
+def object_is_structural(object_name: str) -> bool:
+    return any(label_matches_keyword(object_name, keyword) is not None for keyword in STRUCTURAL_OBJECT_KEYWORDS)
+
+
+def sound_match_key(spec: dict[str, object], object_name: str) -> tuple[int, int, int, int, int] | None:
+    if object_is_structural(object_name):
+        return None
+
+    best: tuple[int, int, int, int, int] | None = None
+    for keyword_index, keyword in enumerate(spec["keywords"]):
+        match = label_matches_keyword(object_name, keyword)
+        if match is None:
+            continue
+        match_mode, position = match
+        candidate = (
+            keyword_index,
+            match_mode,
+            position,
+            -len(normalize_label(keyword).replace(" ", "")),
+            len(normalize_label(object_name).replace(" ", "")),
+        )
+        if best is None or candidate < best:
+            best = candidate
+    return best
+
+
 def source_priority(object_name: str) -> int:
-    lowered = object_name.lower()
-    for idx, spec in enumerate(SOUND_LIBRARY):
-        if any(keyword in lowered for keyword in spec["keywords"]):
-            return idx
-    if any(keyword in lowered for keyword in STRUCTURAL_OBJECT_KEYWORDS):
+    if object_is_structural(object_name):
         return 10_000
+
+    for idx, spec in enumerate(SOUND_LIBRARY):
+        if sound_match_key(spec, object_name) is not None:
+            return idx
     return 1_000
 
 
@@ -950,6 +1001,8 @@ def discover_scene_sources(sim, max_sources: int) -> list[PlacedSource]:
             center = object_aabb_center(obj)
             if center is None:
                 continue
+            if object_is_structural(name):
+                continue
             score = source_priority(name)
             candidates.append((score, name, center))
 
@@ -959,6 +1012,40 @@ def discover_scene_sources(sim, max_sources: int) -> list[PlacedSource]:
     deferred: list[PlacedSource] = []
     used_labels: set[str] = set()
     used_positions: set[tuple[int, int, int]] = set()
+    for spec in SOUND_LIBRARY:
+        if len(placed) >= max_sources:
+            break
+        best: tuple[tuple[int, int, int, int, int], int, str, list[float]] | None = None
+        for score, name, center in candidates:
+            key = tuple(int(round(v * 100)) for v in center)
+            if key in used_positions:
+                continue
+            match_key = sound_match_key(spec, name)
+            if match_key is None:
+                continue
+            candidate = (match_key, score, name, center)
+            if best is None or candidate < best:
+                best = candidate
+
+        if best is None:
+            continue
+
+        _, _, name, center = best
+        key = tuple(int(round(v * 100)) for v in center)
+        used_positions.add(key)
+        clip_name = spec["name"]
+        source = PlacedSource(
+            label=clip_name,
+            object_name=name,
+            position=center,
+            audio_clip=str(DEFAULT_AUDIO_DIR / f"{clip_name}.wav"),
+        )
+        if clip_name in used_labels:
+            deferred.append(source)
+            continue
+        used_labels.add(clip_name)
+        placed.append(source)
+
     for score, name, center in candidates:
         if len(placed) >= max_sources:
             break
