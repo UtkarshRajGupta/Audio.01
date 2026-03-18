@@ -11,6 +11,11 @@ The main demo entrypoint is `soundspaces_mp3d_demo.py`.
 `run_demo.sh` is a convenience launcher that sets up the Habitat env `PATH`
 before invoking the demo.
 
+Other useful docs:
+
+- `SETUP.md`
+- `CONTRIBUTING.md`
+
 ## What it does
 
 1. Loads the Matterport3D scene in Habitat-Sim when the simulator is available.
