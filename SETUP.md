@@ -5,6 +5,17 @@ SoundSpaces demo scaffold.
 
 ## Local run
 
+On macOS, the recommended path is the scene-planning mode:
+
+```bash
+./run_demo.sh --plan-only
+```
+
+That loads the Matterport scene, finds semantic objects, and saves the
+object-to-sound plan to `outputs/`.
+
+If you want a no-Habitat fallback:
+
 ```bash
 ./run_demo.sh --dry-run
 ```

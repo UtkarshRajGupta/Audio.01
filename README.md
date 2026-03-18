@@ -29,6 +29,17 @@ and generates a source plan plus synthetic stand-in audio clips.
 
 ## Quick Start
 
+On macOS, this is the best path:
+
+```bash
+./run_demo.sh --plan-only
+```
+
+That loads the scene, finds semantic room objects, and exports the
+object-to-sound plan without trying to render binaural audio.
+
+If you do not have Habitat installed yet, use:
+
 ```bash
 ./run_demo.sh --dry-run
 ```
@@ -40,7 +51,7 @@ That will create:
 
 ## Real Habitat Run
 
-After installing Habitat-Sim and SoundSpaces 2.0, run:
+After installing Habitat-Sim and SoundSpaces 2.0 on Linux x64, run:
 
 ```bash
 ./run_demo.sh
@@ -62,6 +73,8 @@ Expected outputs:
   with real tap, washer, fridge, fan, and kettle recordings.
 - The source-placement logic is semantic-first with a fallback to navigable
   points if the scene labels are sparse.
+- `run_demo.sh` also skips the editable Habitat-Sim rebuild step so the local
+  Mac workflow stays stable.
 - True SoundSpaces 2.0 audio rendering requires the upstream RLRAudioPropagation
   binary, which is Linux x64 only. On this macOS arm64 machine, Habitat-Sim can
   run and the demo can plan sources, but the live binaural render path is not
