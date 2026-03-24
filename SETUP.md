@@ -40,6 +40,26 @@ make dry-run
 
 This prints the scene assets and the planned 4-5 audio sources.
 
+## Ubuntu VM on Mac
+
+If you want to try the final SoundSpaces render path from a Mac, use an Ubuntu
+Linux x86_64 VM first. Parallels or UTM are the easiest options.
+
+Inside that Ubuntu VM, clone this repo and run:
+
+```bash
+make host-check
+```
+
+or:
+
+```bash
+python3 soundspaces_host_check.py
+```
+
+If the report says `soundspaces_ready: ready`, the VM is suitable for the
+SoundSpaces audio-render step. If it does not, use a Linux x86_64 host instead.
+
 ## Verify
 
 Run the lightweight unit tests with:

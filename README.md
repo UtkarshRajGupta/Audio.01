@@ -51,6 +51,16 @@ It also writes a tiny source-map visualizer:
 - `outputs/5LpN3gDmAk7_source_map.svg`
 - `outputs/5LpN3gDmAk7_source_map.html`
 
+If you want to try the full render path from a Mac, the repo also supports a
+Linux x64 Ubuntu VM preflight:
+
+```bash
+make host-check
+```
+
+Run that inside Ubuntu on your Mac first. If it reports `soundspaces_ready:
+ready`, you have the right kind of host for the final SoundSpaces render step.
+
 If you do not have Habitat installed yet, use:
 
 ```bash
